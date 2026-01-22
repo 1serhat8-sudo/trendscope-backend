@@ -13,7 +13,7 @@ router.post('/play/resolve', async (req, res) => {
   }
 
   const db = req.app.locals.db;
-  const logs = db.collection('resolve_logs'); // 👈 log koleksiyonu
+  const logs = db.collection('resolve_logs');
   const collName =
     platform === 'tiktok' ? 'tiktok_videos' :
     platform === 'instagram' ? 'instagram_videos' :
@@ -36,7 +36,13 @@ router.post('/play/resolve', async (req, res) => {
     } else if (platform === 'instagram') {
       resolved = await resolveInstagramPlayback(doc);
     } else {
-      resolved = { url: doc.video_url || doc.playback_url, expiresAt: null, status: 'ok' };
+      // YouTube için fallback: originalUrl ekle
+      resolved = {
+        url: doc.video_url || doc.playback_url,
+        originalUrl: `https://youtube.com/watch?v=${doc.id}`,
+        expiresAt: null,
+        status: 'ok'
+      };
     }
 
     const duration = Date.now() - start;
@@ -54,6 +60,7 @@ router.post('/play/resolve', async (req, res) => {
       {
         $set: {
           playback_url: resolved.url,
+          playback_original_url: resolved.originalUrl || doc.originalUrl || '',
           playback_expires_at: resolved.expiresAt || null,
           playback_last_checked: new Date().toISOString(),
           playback_status: resolved.status || 'ok',
@@ -70,6 +77,7 @@ router.post('/play/resolve', async (req, res) => {
       id,
       platform,
       playbackUrl: resolved.url,
+      originalUrl: resolved.originalUrl || doc.originalUrl || '',
       expiresAt: resolved.expiresAt,
       status: resolved.status || 'ok',
       durationMs: duration,

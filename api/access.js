@@ -77,16 +77,18 @@ router.get('/access/state', async (req, res) => {
 
     res.json({
       userId,
-      membership: member ? 'active' : 'none',
+      membershipStatus: member ? 'active' : 'none',
       freeRemaining,
+      freeMax: FREE_MAX,
       adRemaining,
+      adGrantSize: AD_GRANT_SIZE,
       grantCount: state.adGrantCount || 0,
       canGrant,
       periodStart: state.periodStart,
     });
   } catch (e) {
-    console.error(e);
-    res.status(500).json({ error: 'Access state alınamadı' });
+    console.error('[access/state] error', e);
+    res.status(500).json({ error: 'Access state alınamadı', details: e.message });
   }
 });
 
@@ -116,7 +118,6 @@ router.post('/access/ad-grant', async (req, res) => {
       return res.status(400).json({ error: 'Günlük grant limiti doldu' });
     }
 
-    // Not: Burada gerçek reklam doğrulaması (receipt/verifier) entegre edilebilir.
     const newGrantCount = (state.adGrantCount || 0) + 1;
 
     await col.updateOne(
@@ -124,7 +125,6 @@ router.post('/access/ad-grant', async (req, res) => {
       {
         $set: {
           adGrantCount: newGrantCount,
-          // Grant verildiğinde adQuotaUsed sıfırlamayız; tüketim kümülatiftir.
           lastAdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString(),
         }
@@ -134,8 +134,8 @@ router.post('/access/ad-grant', async (req, res) => {
 
     res.json({ ok: true, grantCount: newGrantCount, grantSize: AD_GRANT_SIZE });
   } catch (e) {
-    console.error(e);
-    res.status(500).json({ error: 'Ad grant başarısız' });
+    console.error('[access/ad-grant] error', e);
+    res.status(500).json({ error: 'Ad grant başarısız', details: e.message });
   }
 });
 

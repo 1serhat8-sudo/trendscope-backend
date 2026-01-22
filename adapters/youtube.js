@@ -11,7 +11,7 @@ async function fetchYouTubeVideos({ query, regionCode = 'TR', maxResults = 50 })
       part: 'snippet',
       q: query,
       regionCode,
-      maxResults,        // 50'ye kadar artırdık
+      maxResults,
       type: 'video',
       order: 'date'
     }
@@ -37,19 +37,40 @@ async function fetchYouTubeVideos({ query, regionCode = 'TR', maxResults = 50 })
   });
 
   // 3) Snippet + istatistikleri birleştir
-  const merged = items.map(item => ({
-    id: item.id.videoId,
-    title: item.snippet.title,
-    channel: item.snippet.channelTitle,
-    thumbnail: item.snippet.thumbnails?.medium?.url || '',
-    publishedAt: item.snippet.publishedAt,
-    platform: 'youtube',
-    viewCount: Number(statsMap[item.id.videoId]?.viewCount || 0),
-    likeCount: Number(statsMap[item.id.videoId]?.likeCount || 0),
-    dislikeCount: Number(statsMap[item.id.videoId]?.dislikeCount || 0)
-  }));
+  const merged = items.map(item => {
+    const rawId = item.id.videoId;
+    const cleanId = (rawId || '').toString().replace(/^yt_/, '');
 
-  // DEBUG (isteğe bağlı): console.log(`YouTube birleşik sonuç: ${merged.length}`);
+    // ✅ Varsayılan Shorts formatı
+    let originalUrl = `https://www.youtube.com/shorts/${cleanId}`;
+    let playbackUrl = originalUrl;
+
+    // Eğer ileride playbackType sinyali gelirse watch?v= kullanılabilir
+    if (item.playbackType === 'video') {
+      originalUrl = `https://www.youtube.com/watch?v=${cleanId}`;
+      playbackUrl = originalUrl;
+    }
+
+    return {
+      id: cleanId, // ✅ normalize için doğru ID
+      youtube_id: cleanId, // ✅ normalize.js için ek alan
+      title: item.snippet.title,
+      channel: item.snippet.channelTitle,
+      thumbnailUrl: item.snippet.thumbnails?.medium?.url || '',
+      publishedAt: item.snippet.publishedAt,
+      platform: 'youtube',
+
+      // ✅ playback/original alanları
+      originalUrl,
+      playbackUrl,
+
+      // ✅ metrikler
+      viewCount: Number(statsMap[cleanId]?.viewCount || 0),
+      likeCount: Number(statsMap[cleanId]?.likeCount || 0),
+      dislikeCount: Number(statsMap[cleanId]?.dislikeCount || 0)
+    };
+  });
+
   return merged;
 }
 

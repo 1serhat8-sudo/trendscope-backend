@@ -3,11 +3,32 @@ const { resolveInstagramPlayback } = require('../adapters/instagram');
 
 function nowIso() { return new Date().toISOString(); }
 
-// Tahmini TTL: 3 saat (platforma göre ayarlayacağız)
 function ttlHours(hours = 3) {
   const d = new Date();
   d.setHours(d.getHours() + hours);
   return d.toISOString();
+}
+
+function ttlMinutes(minutes = 45) {
+  const d = new Date();
+  d.setMinutes(d.getMinutes() + minutes);
+  return d.toISOString();
+}
+
+async function withRetry(fn, { retries = 2, delayMs = 500 } = {}) {
+  let attempt = 0;
+  let lastErr;
+  while (attempt <= retries) {
+    try {
+      return await fn();
+    } catch (e) {
+      lastErr = e;
+      attempt++;
+      if (attempt > retries) break;
+      await new Promise(res => setTimeout(res, delayMs));
+    }
+  }
+  throw lastErr;
 }
 
 async function refreshPlaybackForOne(db, platform, id) {
@@ -23,32 +44,57 @@ async function refreshPlaybackForOne(db, platform, id) {
   if (!doc) return null;
 
   try {
-    let resolved;
-    if (platform === 'tiktok') {
-      resolved = await resolveTikTokPlayback(doc);
-    } else if (platform === 'instagram') {
-      resolved = await resolveInstagramPlayback(doc);
-    } else {
-      // YouTube için ayrı akış (ileride)
-      resolved = { url: doc.video_url || doc.playback_url, expiresAt: ttlHours(12), status: 'ok' };
+    const resolved = await withRetry(async () => {
+      if (platform === 'tiktok') return resolveTikTokPlayback(doc);
+      if (platform === 'instagram') return resolveInstagramPlayback(doc);
+      // YouTube fallback
+      const ytUrl = doc.videoUrl || doc.video_url || doc.playback_url || null;
+      return {
+        url: ytUrl,
+        originalUrl: `https://youtube.com/watch?v=${doc.id}`,
+        expiresAt: ttlHours(12),
+        status: ytUrl ? 'ok' : 'error'
+      };
+    });
+
+    const playbackUrl = resolved?.url || null;
+    const playbackStatus = resolved?.status || (playbackUrl ? 'ok' : 'error');
+    const expiresAt = resolved?.expiresAt || ttlHours(platform === 'youtube' ? 12 : 2);
+
+    if (!playbackUrl) {
+      await coll.updateOne(
+        { id: id.toString() },
+        {
+          $set: {
+            playback_last_checked: nowIso(),
+            playback_status: 'error',
+            playback_expires_at: ttlMinutes(15),
+          }
+        }
+      );
+      console.warn(`[refresh] ${platform} id=${id} playback URL bulunamadı`);
+      return null;
     }
 
     const payload = {
-      playback_url: resolved?.url || null,
-      playback_expires_at: resolved?.expiresAt || ttlHours(2),
+      playback_url: playbackUrl,
+      playback_original_url: resolved.originalUrl || doc.originalUrl || '',
+      playback_expires_at: expiresAt,
       playback_last_checked: nowIso(),
-      playback_status: resolved?.status || (resolved?.url ? 'ok' : 'error'),
+      playback_status: playbackStatus,
     };
 
     await coll.updateOne({ id: id.toString() }, { $set: payload });
     return { ...doc, ...payload };
   } catch (e) {
+    console.error(`[refresh] ${platform} id=${id} hata:`, e.message);
     await coll.updateOne(
       { id: id.toString() },
       {
         $set: {
           playback_last_checked: nowIso(),
           playback_status: 'error',
+          playback_expires_at: ttlMinutes(15),
         }
       }
     );
@@ -56,14 +102,13 @@ async function refreshPlaybackForOne(db, platform, id) {
   }
 }
 
-// Pre-refresh: büyük havuz için batch yenileme
 async function preRefreshBatch(db, options = {}) {
   const {
-    platform = 'tiktok', // veya 'instagram'
-    limit = 2000,        // binlerce video için artırılabilir
-    ttlThresholdMinutes = 30, // “yakında bitecek” eşiği
+    platform = 'tiktok',
+    limit = 2000,
+    ttlThresholdMinutes = 30,
     sortField = 'collected_at',
-    order = -1, // descending
+    order = -1,
   } = options;
 
   const collName =
@@ -73,7 +118,7 @@ async function preRefreshBatch(db, options = {}) {
   if (!collName) return { refreshed: 0 };
 
   const coll = db.collection(collName);
-  const now = Date.now();
+  const nowMs = Date.now();
 
   const cursor = coll.find({})
     .sort({ [sortField]: order })
@@ -83,10 +128,9 @@ async function preRefreshBatch(db, options = {}) {
 
   while (await cursor.hasNext()) {
     const doc = await cursor.next();
-    const exp = doc.playback_expires_at ? new Date(doc.playback_expires_at).getTime() : 0;
-    const minutesLeft = exp > 0 ? (exp - now) / (60 * 1000) : -1;
+    const expMs = doc.playback_expires_at ? new Date(doc.playback_expires_at).getTime() : 0;
+    const minutesLeft = expMs > 0 ? (expMs - nowMs) / (60 * 1000) : -1;
 
-    // Yoksa veya az kaldıysa yenile
     if (minutesLeft < ttlThresholdMinutes) {
       const r = await refreshPlaybackForOne(db, platform, doc.id?.toString() || doc._id?.toString());
       if (r && r.playback_url) refreshed++;
@@ -96,11 +140,9 @@ async function preRefreshBatch(db, options = {}) {
   return { refreshed };
 }
 
-// Cron scheduler: belirli aralıklarla iki platformu da yenile
 function startRefreshScheduler(app) {
   const db = app.locals.db;
 
-  // Her 30 dakikada bir TikTok ve Instagram batch çalıştır
   setInterval(async () => {
     try {
       const t = await preRefreshBatch(db, { platform: 'tiktok', limit: 5000, ttlThresholdMinutes: 45 });
@@ -109,7 +151,7 @@ function startRefreshScheduler(app) {
     } catch (e) {
       console.error('[preRefresh] error', e);
     }
-  }, 30 * 60 * 1000); // 30 dakika
+  }, 30 * 60 * 1000);
 }
 
 module.exports = {

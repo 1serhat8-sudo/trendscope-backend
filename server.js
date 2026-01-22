@@ -16,6 +16,7 @@ const playRoutes = require('./api/play');
 const proxyRoutes = require('./api/proxy');
 const statsRoutes = require('./api/stats');
 const youtubeRoutes = require('./routes/youtube');
+const userActionsRoutes = require('./routes/userActions'); // ✅ Yeni eklendi
 
 const app = express();
 app.use(cors());
@@ -31,6 +32,16 @@ async function initDb() {
   const db = client.db(dbName);
   app.locals.db = db;
   console.log(`🗄️ MongoDB bağlandı: ${dbName}`);
+
+  // ✅ Benzersiz index tanımları (duplicate kaydı engeller)
+  await db.collection('liked_items').createIndex(
+    { userId: 1, itemId: 1 },
+    { unique: true, name: 'uniq_user_item_like' }
+  );
+  await db.collection('saved_items').createIndex(
+    { userId: 1, itemId: 1 },
+    { unique: true, name: 'uniq_user_item_save' }
+  );
 }
 
 // Routes
@@ -40,9 +51,9 @@ app.use('/api', resolveRoutes);
 app.use('/api', playRoutes);
 app.use('/api', statsRoutes);
 app.use('/api', youtubeRoutes);
+app.use('/api', userActionsRoutes); // ✅ Yeni route mount edildi
 
 // ⚠️ Proxy mount düzeltildi
-// api/proxy.js içinde /proxy/stream tanımlı → burada /api mount edelim
 app.use('/api', proxyRoutes);
 
 // Health check
@@ -50,14 +61,14 @@ app.get('/api/health', (req, res) => {
   res.json({ status: "ok" });
 });
 
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 5000; // sen zaten 5000 kullanıyorsun
 
 initDb().then(() => {
   startRefreshScheduler(app);
 
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`🚀 Backend çalışıyor: http://0.0.0.0:${PORT}`);
-    console.log(`📡 LAN erişimi için: http://<PC_IP>:${PORT}`);
+    console.log(`📡 LAN erişimi için: http://172.20.10.2:${PORT}`);
   });
 }).catch(err => {
   console.error('❌ Mongo bağlantı hatası:', err);
